@@ -1,0 +1,33 @@
+services:
+  postgres-biz:
+    image: postgres:15-alpine
+    container_name: postgres_bussiness_db
+    restart: always
+    environment:
+      - POSTGRES_USER=biz_admin
+      - POSTGRES_PASSWORD=BizPassword
+      - POSTGRES_DB=bussiness_db
+      - PGDATA=/var/lib/postgresql/data
+      - TZ=Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdb-data:/var/lib/postgresql/data
+      - ./pg_init:/docker-entrypoint-initdb.d
+
+  mongodb-privacy:
+    image: mongo:6.0
+    container_name: mongodb_privacy_db
+    restart: always
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=privacy_admin
+      - MONGO_INITDB_ROOT_PASSWORD=PrivacyPassword
+      - TZ=Asia/Shanghai
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+      - ./mongo_init:/docker-entrypoint-initdb.d
+volumes:
+  pgdb-data:
+  mongodb-data:

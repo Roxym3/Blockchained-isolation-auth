@@ -1,0 +1,5 @@
+*.exe
+*.log
+*.key
+vendor/
+.idea/
