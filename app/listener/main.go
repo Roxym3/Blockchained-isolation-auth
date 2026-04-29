@@ -2,189 +2,59 @@ package main
 
 import (
 	"context"
-	"crypto/x509"
-	"encoding/json"
 	"fmt"
+	"listener/pkg/config"
+	"listener/pkg/database"
+	"listener/pkg/fabric"
+	"listener/pkg/listener"
+	"listener/pkg/pool"
 	"log"
 	"os"
-	"path/filepath"
-	"time"
-
-	"github.com/hyperledger/fabric-gateway/pkg/client"
-	"github.com/hyperledger/fabric-gateway/pkg/identity"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
+	"os/signal"
+	"syscall"
 )
 
-const (
-	mspID           = "PrivacyMSP"
-	channelName     = "cross-domain-channel"
-	chaincodeName   = "authcc"
-	cryptoPath      = "/home/roxy3/blockchained_isolation_auth/fabric/test-network/organizations/peerOrganizations/privacy.com"
-	certPath        = cryptoPath + "/users/Admin@privacy.com/msp/signcerts/Admin@privacy.com-cert.pem"
-	keyDir          = cryptoPath + "/users/Admin@privacy.com/msp/keystore"
-	tlsRootCertPath = cryptoPath + "/peers/peer0.privacy.com/tls/ca.crt"
-
-	mongoURI = "mongodb://privacy_admin:PrivacyPassword@localhost:27017"
-	dbName   = "privacy_db"
-	colName  = "cross_domain_tickets"
-)
-
-type PeerNode struct {
-	Endpoint string
-	HostName string
-}
-
-var privacyPeers = []PeerNode{
-	{Endpoint: "localhost:9051", HostName: "peer0.privacy.com"},
-	{Endpoint: "localhost:9061", HostName: "peer1.privacy.com"},
-}
+const MaxRetries = 16
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := run(); err != nil {
+		log.Fatalf("FATAL :%v", err)
+	}
+}
+
+func run() error {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	mongoClient, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	cfg, err := config.Load("./config.yaml")
 	if err != nil {
-		log.Fatalf("unable to connect to mongodb:%v", err)
+		return fmt.Errorf("load config: %w", err)
 	}
-	defer mongoClient.Disconnect(context.Background())
 
-	ticketCollection := mongoClient.Database(dbName).Collection(colName)
-	log.Println("connect to mongodb in privacy domain successfully!")
-
-	for {
-		for _, node := range privacyPeers {
-			log.Printf("trying to connect to [%s](%s)...", node.HostName, node.Endpoint)
-
-			gw, err := connectToFabric(node)
-			if err != nil {
-				log.Printf("failed to connect to %s,%v,switching for next", node.HostName, err)
-			}
-
-			log.Printf("connected to %s! Begin to listen for event", node.HostName)
-
-			listenToEvents(gw, ticketCollection)
-			gw.Close()
-			log.Printf("lost connection to %s", node.HostName)
-		}
-
-		log.Println("Peers in Privacy domain are unavailable! Retry after 5s")
-		time.Sleep(5 * time.Second)
-	}
-}
-
-func listenToEvents(gw *client.Gateway, collection *mongo.Collection) {
-	network := gw.GetNetwork(channelName)
-	ctxEvents, cancelEvents := context.WithCancel(context.Background())
-	defer cancelEvents()
-
-	events, err := network.ChaincodeEvents(ctxEvents, chaincodeName)
+	mongoClient, err := database.InitMongoDB(&cfg.Database)
 	if err != nil {
-		log.Printf("failed to subscribe stream events:%v", err)
-		return
+		return fmt.Errorf("database error: %w", err)
 	}
+	defer database.Disconnect(mongoClient)
 
-	for event := range events {
-		if event.EventName == "TicketIssuedEvent" {
-			var ticketData map[string]interface{}
-			if err := json.Unmarshal(event.Payload, &ticketData); err != nil {
-				continue
-			}
+	ticketColl := mongoClient.Database(cfg.Database.DBName).Collection(cfg.Database.Collection)
+	log.Println("successfully connect to mongodb")
 
-			if target, ok := ticketData["target_domain"].(string); ok && target == mspID {
-				ticketData["_id"] = ticketData["ticket_id"]
-				ticketData["received_at"] = time.Now().Format(time.RFC3339)
-
-				_, err := collection.UpdateOne(context.Background(),
-					bson.M{"_id": ticketData["_id"]},
-					bson.M{"$set": ticketData},
-					options.Update().SetUpsert(true),
-				)
-
-				if err != nil {
-					log.Printf("failed to write data:%v", err)
-				} else {
-					log.Printf("successfully catch and save ticket[%s]", ticketData["ticket_id"])
-				}
-			}
-		}
-	}
-}
-
-func connectToFabric(node PeerNode) (*client.Gateway, error) {
-	cert, err := loadCertificate(certPath)
+	taskPool := pool.NewPool(100)
+	eventListener, err := listener.NewFabricListener(ticketColl, taskPool, &cfg.Fabric)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load client certificate:%v", err)
+		return fmt.Errorf("create fabric listener: %w", err)
 	}
 
-	id, err := identity.NewX509Identity(mspID, cert)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create certificate object:%v", err)
-	}
+	m := fabric.NewManger(cfg.Fabric.Peers, &cfg.Fabric, eventListener)
+	go m.Start(ctx)
 
-	sign, err := newSigner()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create signer:%v", err)
-	}
+	<-ctx.Done()
+	log.Println("cleaning up")
 
-	tlsCert, err := loadCertificate(tlsRootCertPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load tls certificate:%v", err)
-	}
+	taskPool.Wait()
+	eventListener.Wm.End()
 
-	certPool := x509.NewCertPool()
-	certPool.AddCert(tlsCert)
-
-	transportCredentials := credentials.NewClientTLSFromCert(certPool, node.HostName)
-	grpcConn, err := grpc.NewClient(node.Endpoint, grpc.WithTransportCredentials(transportCredentials))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create grpc connection:%v", err)
-	}
-
-	gw, err := client.Connect(
-		id,
-		client.WithSign(sign),
-		client.WithClientConnection(grpcConn),
-		client.WithEvaluateTimeout(5*time.Second),
-		client.WithEndorseTimeout(15*time.Second),
-		client.WithSubmitTimeout(5*time.Second),
-		client.WithCommitStatusTimeout(1*time.Minute),
-	)
-	if err != nil {
-		grpcConn.Close()
-		return nil, fmt.Errorf("failed to initalize grpc connection:%v", err)
-	}
-	return gw, nil
-}
-
-func loadCertificate(filename string) (*x509.Certificate, error) {
-	certificatePEM, err := os.ReadFile(filename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load certificate:%v", err)
-	}
-
-	return identity.CertificateFromPEM(certificatePEM)
-}
-
-func newSigner() (identity.Sign, error) {
-	files, err := os.ReadDir(keyDir)
-	if err != nil {
-		return nil, err
-	}
-
-	privateKeyPEM, err := os.ReadFile(filepath.Join(keyDir, files[0].Name()))
-	if err != nil {
-		return nil, err
-	}
-
-	privateKey, err := identity.PrivateKeyFromPEM(privateKeyPEM)
-	if err != nil {
-		return nil, err
-	}
-
-	return identity.NewPrivateKeySign(privateKey)
+	log.Printf("exited")
+	return nil
 }
