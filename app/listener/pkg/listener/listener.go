@@ -68,13 +68,7 @@ func (l *FabricListener) Listen(ctx context.Context, gw *client.Gateway) {
 		blockNum := event.BlockNumber
 
 		l.Pool.AddTask(pool.NewTask(func() error {
-			var err error
-			switch eventName {
-			case "TicketIssuedEvent":
-				err = l.processTicketIssued(ctx, payload)
-			default:
-				err = nil
-			}
+			err := l.handleEvents(ctx, payload, eventName)
 			if err == nil {
 				l.Wm.Mark(blockNum + 1)
 			}
@@ -83,40 +77,47 @@ func (l *FabricListener) Listen(ctx context.Context, gw *client.Gateway) {
 	}
 }
 
-func (l *FabricListener) processTicketIssued(ctx context.Context, payload []byte) error {
-	var ticketData map[string]interface{}
-
-	if err := json.Unmarshal(payload, &ticketData); err != nil {
-		log.Printf("failed to resolve ticket data:%v", err)
-		return err
-	}
-
-	target, ok := ticketData["target_domain"].(string)
-	if !ok || target != l.Config.MspID {
+func (l *FabricListener) handleEvents(ctx context.Context, payload []byte, eventName string) error {
+	if eventName != "TicketIssuedEvent" && eventName != "TicketRevokedEvent" {
 		return nil
 	}
 
-	ticketData["_id"] = ticketData["ticket_id"]
-	ticketData["received_at"] = time.Now().Format(time.RFC3339)
+	var ticketData map[string]interface{}
+	if err := json.Unmarshal(payload, &ticketData); err != nil {
+		log.Printf("failed to resolve ticket data %s: %v", eventName, err)
+		return nil
+	}
 
+	ticketID, ok := ticketData["ticket_id"].(string)
+	if !ok || ticketID == "" {
+		log.Printf("Ignored event %s: missing or empty ticket_id\n", eventName)
+		return nil
+	}
+
+	if eventName == "TicketIssuedEvent" {
+		target, ok := ticketData["target_domain"].(string)
+		if !ok || target != l.Config.MspID {
+			return nil
+		}
+	}
+
+	ticketData["_id"] = ticketData["ticket_id"]
+	ticketData["sys_updated_at"] = time.Now().Format(time.RFC3339)
+	ticketData["sys_last_event"] = eventName
+
+	return l.upsertWithRetry(ctx, ticketID, ticketData)
+}
+
+func (l *FabricListener) upsertWithRetry(ctx context.Context, ticketID string, ticketData map[string]any) error {
 	retryTime := 0
 	for {
-		dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := l.Collection.UpdateOne(
-			dbCtx,
-			bson.M{"_id": ticketData["_id"]},
-			bson.M{"$set": ticketData},
-			options.Update().SetUpsert(true),
-		)
-		dbCancel()
-
-		if err == nil {
+		if err := l.execUpsert(ticketID, ticketData); err == nil {
 			log.Printf("catch and write ticket data successfully[%s]", ticketData["ticket_id"])
-			break
+			return nil
 		}
 
 		retryTime++
-		log.Printf("failed to write into mongodb:%v,retried %d times", err, retryTime)
+		log.Printf("failed to write into mongodb:%s,retried %d times", ticketID, retryTime)
 
 		sleepTime := time.Duration(retryTime) * time.Second
 		if sleepTime > 10*time.Second {
@@ -129,6 +130,19 @@ func (l *FabricListener) processTicketIssued(ctx context.Context, payload []byte
 		case <-time.After(sleepTime):
 		}
 	}
+}
 
+func (l *FabricListener) execUpsert(ticketID string, ticketData map[string]any) error {
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer dbCancel()
+	_, err := l.Collection.UpdateOne(
+		dbCtx,
+		bson.M{"_id": ticketData["_id"]},
+		bson.M{"$set": ticketData},
+		options.Update().SetUpsert(true),
+	)
+	if err != nil {
+		return fmt.Errorf("Error upsert: %w", err)
+	}
 	return nil
 }
