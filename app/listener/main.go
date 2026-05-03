@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"listener/pkg/api"
 	"listener/pkg/config"
 	"listener/pkg/database"
 	"listener/pkg/fabric"
@@ -48,6 +49,14 @@ func run() error {
 
 	m := fabric.NewManger(cfg.Fabric.Peers, &cfg.Fabric, eventListener)
 	go m.Start(ctx)
+
+	// Start API Server
+	apiServer := api.NewServer(ticketColl)
+	go func() {
+		if err := apiServer.Start("8081"); err != nil {
+			log.Printf("API Server error: %v", err)
+		}
+	}()
 
 	<-ctx.Done()
 	log.Println("cleaning up")

@@ -37,11 +37,12 @@ func (s *SmartContract) getTicket(ctx contractapi.TransactionContextInterface, t
 	}
 
 	if ticketJSON == nil {
-		return nil, fmt.Errorf("tikcet not exists: %s", ticketID)
+		return nil, fmt.Errorf("ticket not exists: %s", ticketID)
 	}
 
 	var ticket AuthTicket
-	if err := json.Unmarshal(ticketJSON, ticket); err != nil {
+	// FIX: json.Unmarshal requires a pointer to the struct
+	if err := json.Unmarshal(ticketJSON, &ticket); err != nil {
 		return nil, fmt.Errorf("Unmarshal json: %w", err)
 	}
 
@@ -101,9 +102,7 @@ func (s *SmartContract) IssueTicket(ctx contractapi.TransactionContextInterface,
 		IssuerCert:   certPEM,
 	}
 
-	s.putAndEvent(ctx, &ticket, "TicketIssuedEvent")
-
-	return nil
+	return s.putAndEvent(ctx, &ticket, "TicketIssuedEvent")
 }
 
 func (s *SmartContract) VerifyTicket(ctx contractapi.TransactionContextInterface, ticketID string) (bool, error) {
@@ -151,11 +150,12 @@ func (s *SmartContract) RevokeTicket(ctx contractapi.TransactionContextInterface
 		return err
 	}
 
-	if ticket.TargetDomain != callerMSPID {
+	// FIX: Only the issuer domain can revoke the ticket, not the target domain
+	if ticket.IssuerDomain != callerMSPID {
 		return fmt.Errorf("Permission denied,only issuer can revoke this ticket")
 	}
 
-	if ticket.IsRevoked == true {
+	if ticket.IsRevoked {
 		return fmt.Errorf("Ticket has been revoked")
 	}
 
@@ -169,6 +169,40 @@ func (s *SmartContract) TicketExists(ctx contractapi.TransactionContextInterface
 		return false, fmt.Errorf("failed to read ticket:%v", err)
 	}
 	return ticketJSON != nil, nil
+}
+
+func (s *SmartContract) QueryTicket(ctx contractapi.TransactionContextInterface, ticketID string) (*AuthTicket, error) {
+	ticket, err := s.getTicket(ctx, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	return ticket, nil
+}
+
+func (s *SmartContract) QueryAllTickets(ctx contractapi.TransactionContextInterface) ([]*AuthTicket, error) {
+	resultsIterator, err := ctx.GetStub().GetStateByRange("", "")
+	if err != nil {
+		return nil, err
+	}
+	defer resultsIterator.Close()
+
+	var tickets []*AuthTicket
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		var ticket AuthTicket
+		err = json.Unmarshal(queryResponse.Value, &ticket)
+		if err != nil {
+			// Skip entries that are not tickets, or just ignore unmarshal errors
+			continue
+		}
+		tickets = append(tickets, &ticket)
+	}
+
+	return tickets, nil
 }
 
 func main() {

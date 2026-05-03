@@ -1,5 +1,4 @@
 #!/bin/bash
-
 export PATH="${PWD}/../bin:${PWD}/$PATH"
 export DOCKER_SOCK=/var/run/docker.sock
 
@@ -67,6 +66,6 @@ done
 
 export -f set_peer_env
 export CHANNEL_ID
-. ./depolyCC.sh
+. ./deployCC.sh
 
 docker ps

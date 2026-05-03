@@ -7,7 +7,7 @@ CC_LABEL="${CC_NAME}_1.0"
 PEER_BIN="../bin/peer"
 ORDERER_CA="${PWD}/organizations/ordererOrganizations/example.com/orderers/orderer.example.com/tls/ca.crt"
 
-$PEER_BIN lifecycle chaincode package "$CC_PKG" --path "$CC_SRC_PATH" --lang golang --label "$CC_LABEL"
+GO111MODULE=on GOWORK=off $PEER_BIN lifecycle chaincode package "$CC_PKG" --path "$CC_SRC_PATH" --lang golang --label "$CC_LABEL"
 
 installCC() {
         local ORG_DOMAIN=$1

@@ -3,9 +3,9 @@ fabric:
   channel_name: "cross-domain-channel"
   chaincode_name: "authcc"
   # 证书与密钥路径
-  cert_path: "/home/roxy3/blockchained_isolation_auth/fabric/test-network/organizations/peerOrganizations/privacy.com/users/Admin@privacy.com/msp/signcerts/Admin@privacy.com-cert.pem"
-  key_dir: "/home/roxy3/blockchained_isolation_auth/fabric/test-network/organizations/peerOrganizations/privacy.com/users/Admin@privacy.com/msp/keystore"
-  tls_root_cert_path: "/home/roxy3/blockchained_isolation_auth/fabric/test-network/organizations/peerOrganizations/privacy.com/peers/peer0.privacy.com/tls/ca.crt"
+  cert_path: "/home/roxy3/Blockchained-isolation-auth/fabric/test-network/organizations/peerOrganizations/privacy.com/users/Admin@privacy.com/msp/signcerts/Admin@privacy.com-cert.pem"
+  key_dir: "/home/roxy3/Blockchained-isolation-auth/fabric/test-network/organizations/peerOrganizations/privacy.com/users/Admin@privacy.com/msp/keystore"
+  tls_root_cert_path: "/home/roxy3/Blockchained-isolation-auth/fabric/test-network/organizations/peerOrganizations/privacy.com/peers/peer0.privacy.com/tls/ca.crt"
   # 节点列表
   peers:
     - endpoint: "localhost:9051"

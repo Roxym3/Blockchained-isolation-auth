@@ -1,0 +1,1 @@
+chaincode-go目录下的代码需要本地go mod vendor下载依赖，否则start脚本会显示utf-8错误
