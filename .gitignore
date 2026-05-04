@@ -6,5 +6,7 @@ vendor/
 go.work
 go.work.sum
 PPT_Outline.md
-app/backend
-app/frontend
+app/backend/
+app/frontend/
+fabric/bin/
+fabric/builders/
